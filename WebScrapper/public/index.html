@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniScrape | Multi-Source Business Directory Scraper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header Navbar -->
+    <header class="navbar">
+      <div class="logo">
+        <div class="logo-icon"><i class="fa-solid fa-radar"></i></div>
+        <div class="logo-text">
+          <span class="brand-title">OmniScrape 2.0</span>
+          <span class="brand-sub">Multi-Source Concatenation & Deep Store Locator Engine</span>
+        </div>
+      </div>
+      <div class="nav-actions">
+        <span class="status-badge live"><i class="fa-solid fa-circle"></i> Engine Online</span>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <!-- Search & Configuration Section -->
+      <section class="card config-card">
+        <div class="card-header">
+          <h2><i class="fa-solid fa-magnifying-glass-location"></i> Configure Multi-Platform Business Search</h2>
+          <p>Exhaustively searches and concatenates results across Google Maps, OpenStreetMap GIS, Store Locators, Search Engines, and Social Directories.</p>
+        </div>
+        
+        <form id="scrape-form" class="scrape-form">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="keyword-input"><i class="fa-solid fa-store"></i> Business Brand / Keyword</label>
+              <input type="text" id="keyword-input" placeholder="e.g. 7-Eleven Stores, McDonald's, Temples, Mosques" value="7-Eleven Stores" required>
+            </div>
+
+            <div class="form-group">
+              <label for="area-input"><i class="fa-solid fa-map-location-dot"></i> City, Province, or State</label>
+              <input type="text" id="area-input" placeholder="e.g. California, Fremont, Federal Way" value="California" required>
+            </div>
+          </div>
+
+          <!-- Mode & Depth Settings -->
+          <div class="form-grid" style="grid-template-columns: 1fr 1fr; margin-bottom: 18px;">
+            <div class="form-group">
+              <label for="depth-select"><i class="fa-solid fa-layer-group"></i> Geographic Search Depth</label>
+              <select id="depth-select" class="custom-select">
+                <option value="exhaustive" selected>Exhaustive Deep Search (All Cities & All Zipcodes)</option>
+                <option value="standard">Standard Fast Search (Major Hubs)</option>
+              </select>
+            </div>
+            
+            <div class="form-group">
+              <label><i class="fa-solid fa-object-group"></i> Multi-Source Concatenation</label>
+              <div class="concatenation-indicator">
+                <i class="fa-solid fa-circle-check" style="color: var(--accent-green);"></i>
+                <span>Auto-Merge & Deduplicate across Maps + GIS + Directories</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Region Suggestions -->
+          <div class="preset-pills">
+            <span class="pill-label">Quick Scenarios:</span>
+            <button type="button" class="preset-btn" data-keyword="7-Eleven Stores" data-area="California">7-Eleven in California</button>
+            <button type="button" class="preset-btn" data-keyword="Temples" data-area="California">Temples in California</button>
+            <button type="button" class="preset-btn" data-keyword="McDonald's" data-area="Fremont">McDonald's in Fremont</button>
+            <button type="button" class="preset-btn" data-keyword="Mosques" data-area="Federal Way">Mosques in Federal Way</button>
+          </div>
+
+          <!-- Platform Priorities Toggle -->
+          <div class="platform-section">
+            <label class="section-label"><i class="fa-solid fa-diagram-project"></i> Concatenated Research Sources</label>
+            <div class="platform-tags">
+              <label class="platform-chip active">
+                <input type="checkbox" name="platform" value="maps" checked disabled>
+                <i class="fa-solid fa-map-pin"></i> Google Maps
+              </label>
+              <label class="platform-chip active">
+                <input type="checkbox" name="platform" value="gis" checked disabled>
+                <i class="fa-solid fa-earth-americas"></i> OpenStreetMap GIS
+              </label>
+              <label class="platform-chip active">
+                <input type="checkbox" name="platform" value="locator" checked disabled>
+                <i class="fa-solid fa-city"></i> Chain Store Locators
+              </label>
+              <label class="platform-chip active">
+                <input type="checkbox" name="platform" value="search" checked>
+                <i class="fa-brands fa-google"></i> Google Search
+              </label>
+              <label class="platform-chip active">
+                <input type="checkbox" name="platform" value="facebook" checked>
+                <i class="fa-brands fa-facebook"></i> Facebook
+              </label>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" id="start-btn" class="btn btn-primary btn-lg">
+              <i class="fa-solid fa-bolt"></i> Start Exhaustive Multi-Source Search
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Real-Time Progress & Terminal Monitor -->
+      <section id="progress-section" class="card progress-card hidden">
+        <div class="card-header">
+          <div class="header-with-status">
+            <h2><i class="fa-solid fa-terminal"></i> Live Concatenation & Deep Search Console</h2>
+            <span id="progress-percent" class="percent-counter">0%</span>
+          </div>
+          <div class="progress-bar-container">
+            <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div class="console-box" id="console-logs">
+          <div class="log-line info">[INIT] Multi-source concatenator initialized...</div>
+        </div>
+      </section>
+
+      <!-- Stats Summary Banner -->
+      <section id="stats-section" class="stats-grid hidden">
+        <div class="stat-card">
+          <div class="stat-icon purple"><i class="fa-solid fa-building"></i></div>
+          <div class="stat-info">
+            <span class="stat-value" id="stat-total">0</span>
+            <span class="stat-label">Unique Stores Discovered</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green"><i class="fa-solid fa-envelope"></i></div>
+          <div class="stat-info">
+            <span class="stat-value" id="stat-emails">0</span>
+            <span class="stat-label">Emails Extracted</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon blue"><i class="fa-solid fa-phone"></i></div>
+          <div class="stat-info">
+            <span class="stat-value" id="stat-phones">0</span>
+            <span class="stat-label">Phones Found</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange"><i class="fa-solid fa-code-merge"></i></div>
+          <div class="stat-info">
+            <span class="stat-value" id="stat-sources">0</span>
+            <span class="stat-label">Merged Multi-Platform Sources</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results Grid Table Section -->
+      <section id="results-section" class="card results-card hidden">
+        <div class="results-toolbar">
+          <div class="toolbar-left">
+            <h3><i class="fa-solid fa-table-list"></i> Concatenated Business Leads</h3>
+            <span class="lead-count-badge" id="results-badge">0 Records</span>
+          </div>
+
+          <div class="toolbar-right">
+            <div class="search-box">
+              <i class="fa-solid fa-filter"></i>
+              <input type="text" id="table-filter" placeholder="Filter by name, address, zip or phone...">
+            </div>
+            <button id="export-csv-btn" class="btn btn-secondary"><i class="fa-solid fa-file-csv"></i> Export CSV</button>
+            <button id="export-json-btn" class="btn btn-secondary"><i class="fa-solid fa-file-code"></i> Export JSON</button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="leads-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Business Store / Name</th>
+                <th>Physical Address</th>
+                <th>City & Zipcode</th>
+                <th>Phone Number</th>
+                <th>Email Address</th>
+                <th>Concatenated Sources</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="leads-tbody">
+              <!-- Dynamically Populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- Lead Detail Modal -->
+    <div id="lead-modal" class="modal hidden">
+      <div class="modal-content card">
+        <div class="modal-header">
+          <h3 id="modal-title">Business Store Details</h3>
+          <button id="modal-close" class="close-btn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" id="modal-body">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
