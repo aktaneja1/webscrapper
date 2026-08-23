@@ -17,6 +17,17 @@ function cleanPhone(phone) {
   return phone.replace(/\D/g, '');
 }
 
+// Extract domain from URL
+function extractDomain(url) {
+  if (!url || url === 'NA') return '';
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Deduplicates and concatenates a list of raw lead records collected from multiple platforms.
  */
@@ -31,6 +42,7 @@ function mergeAndConcatenateLeads(rawLeads) {
     const normName = normalizeStr(lead.name);
     const normPhone = cleanPhone(lead.phone);
     const normLoc = normalizeStr(lead.location);
+    const normDomain = extractDomain(lead.website);
 
     let matchKey = null;
 
@@ -39,15 +51,23 @@ function mergeAndConcatenateLeads(rawLeads) {
       const existingName = normalizeStr(existing.name);
       const existingPhone = cleanPhone(existing.phone);
       const existingLoc = normalizeStr(existing.location);
+      const existingDomain = extractDomain(existing.website);
 
       // Match criteria 1: Same phone number
       const phoneMatch = normPhone && existingPhone && (normPhone === existingPhone || normPhone.endsWith(existingPhone.slice(-7)));
 
-      // Match criteria 2: Name similarity and address similarity
-      const nameMatch = normName.includes(existingName) || existingName.includes(normName);
-      const locMatch = normLoc && existingLoc && (normLoc.slice(0, 15) === existingLoc.slice(0, 15));
+      // Match criteria 2: Same website domain
+      const domainMatch = normDomain && existingDomain && normDomain === existingDomain;
 
-      if (phoneMatch || (nameMatch && locMatch)) {
+      // Match criteria 3: Name similarity (one contains the other, at least 10 chars overlap)
+      const nameMatch = normName.length > 10 && existingName.length > 10 && 
+        (normName.includes(existingName) || existingName.includes(normName));
+      
+      // Match criteria 4: Address similarity (first 15 chars match, or one is empty)
+      const locMatch = (!normLoc || !existingLoc) || (normLoc.slice(0, 15) === existingLoc.slice(0, 15));
+
+      // Match if: same phone OR same domain OR (name match AND location compatible)
+      if (phoneMatch || domainMatch || (nameMatch && locMatch)) {
         matchKey = key;
         break;
       }
@@ -72,9 +92,21 @@ function mergeAndConcatenateLeads(rawLeads) {
         existing.phone = lead.phone;
       }
 
-      // Merge Email
-      if ((existing.email === 'NA' || !existing.email) && lead.email && lead.email !== 'NA') {
-        existing.email = lead.email;
+      // Merge Email - prefer contact/office/info emails over others
+      const preferredEmailPrefixes = ['contact', 'info', 'office', 'officemanager', 'admin', 'hello'];
+      const isPreferredEmail = (email) => {
+        if (!email || email === 'NA') return false;
+        const prefix = email.split('@')[0].toLowerCase();
+        return preferredEmailPrefixes.some(p => prefix.includes(p));
+      };
+      
+      if (lead.email && lead.email !== 'NA') {
+        if (existing.email === 'NA' || !existing.email) {
+          existing.email = lead.email;
+        } else if (isPreferredEmail(lead.email) && !isPreferredEmail(existing.email)) {
+          // Replace with preferred email
+          existing.email = lead.email;
+        }
       }
 
       // Merge Website

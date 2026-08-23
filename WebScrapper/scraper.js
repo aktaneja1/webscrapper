@@ -63,6 +63,7 @@ function decodeDuckDuckGoUrl(rawUrl) {
 
 /**
  * Decode Bing tracking URLs to get actual destination
+ * Bing uses base64 encoding with 'a1' prefix
  */
 function decodeBingUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return 'NA';
@@ -73,18 +74,18 @@ function decodeBingUrl(rawUrl) {
       const parsed = new URL(rawUrl);
       const encodedUrl = parsed.searchParams.get('u');
       if (encodedUrl) {
-        // Bing encodes URLs with a1 prefix
         let decoded = encodedUrl;
+        // Remove 'a1' prefix if present
         if (decoded.startsWith('a1')) {
           decoded = decoded.substring(2);
         }
-        decoded = decodeURIComponent(decoded);
-        // Handle base64 encoding if present
+        // Decode base64
         try {
-          if (!decoded.startsWith('http')) {
-            decoded = Buffer.from(decoded, 'base64').toString('utf-8');
-          }
-        } catch (_) {}
+          decoded = Buffer.from(decoded, 'base64').toString('utf-8');
+        } catch (_) {
+          // If base64 fails, try URL decode
+          decoded = decodeURIComponent(decoded);
+        }
         return decoded.startsWith('http') ? decoded : 'NA';
       }
     }
@@ -283,12 +284,14 @@ async function scrapeWebsiteDetails(websiteUrl) {
  */
 async function searchOverpassGIS(keyword, target) {
   const leads = [];
+  const seenNames = new Set();
+  
   try {
-    // Build a cleaner search query - use city and state, skip zip if empty
+    // Build search query - use city and state
     const locationParts = [target.city, target.region].filter(Boolean);
-    const searchQuery = `${keyword} ${locationParts.join(', ')}`.trim();
+    const searchQuery = `${keyword} ${locationParts.join(' ')}`.trim();
     
-    // Nominatim search with improved parameters
+    // Nominatim search
     const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&addressdetails=1&extratags=1&limit=20`;
     
     console.log(`[GIS] Querying: ${searchQuery}`);
@@ -296,9 +299,8 @@ async function searchOverpassGIS(keyword, target) {
     const res = await axiosInstance.get(nomUrl, {
       timeout: 10000,
       headers: { 
-        'User-Agent': 'WebScrapperApp/2.1 (https://github.com/user/webscrapper)',
-        'Accept': 'application/json',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'User-Agent': 'WebScrapperTest/1.0',
+        'Accept': 'application/json'
       }
     });
 
@@ -316,6 +318,12 @@ async function searchOverpassGIS(keyword, target) {
 
         // Get name from multiple possible sources
         const name = place.name || tags.name || place.namedetails?.name || place.display_name.split(',')[0] || keyword;
+        
+        // Skip duplicates by name
+        const normName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (seenNames.has(normName)) continue;
+        seenNames.add(normName);
+        
         const fullAddr = `${house} ${road}, ${city}, ${state} ${postcode}`.trim().replace(/^,\s*/, '').replace(/,\s*,/g, ',');
         const phone = tags.phone || tags['contact:phone'] || "NA";
         const email = tags.email || tags['contact:email'] || "NA";
@@ -341,49 +349,147 @@ async function searchOverpassGIS(keyword, target) {
   return leads;
 }
 
+// Domains to exclude from results (generic info sites, not businesses)
+const EXCLUDED_DOMAINS = [
+  'wikipedia.org', 'britannica.com', 'dictionary.com', 'merriam-webster.com',
+  'reddit.com', 'quora.com', 'pinterest.com', 'twitter.com', 'x.com',
+  'youtube.com', 'tiktok.com', 'amazon.com', 'ebay.com', 'etsy.com',
+  'news.google.com', 'crazygames.com', 'tripadvisor.com/Tourism',
+  'thehindu.com', 'hinduismtoday.com', 'history.com', 'hinduismfacts.org',
+  'bbc.com', 'cnn.com', 'nytimes.com', 'washingtonpost.com',
+  'learnenglish.britishcouncil.org', 'khanacademy.org', 'coursera.org',
+  'about.com', 'thoughtco.com', 'livescience.com', 'nationalgeographic.com',
+  'smithsonianmag.com', 'pbs.org', 'howstuffworks.com'
+];
+
+function isExcludedDomain(url) {
+  if (!url) return true;
+  const lower = url.toLowerCase();
+  return EXCLUDED_DOMAINS.some(domain => lower.includes(domain));
+}
+
+function isLikelyBusinessResult(title, url, snippet, keyword) {
+  if (!title || !url) return false;
+  if (isExcludedDomain(url)) return false;
+  
+  const titleLower = title.toLowerCase();
+  const keywordLower = keyword.toLowerCase().replace(/s$/, ''); // Remove trailing 's'
+  
+  // Good indicators - business directories, maps, official sites
+  const goodIndicators = [
+    'yelp.com', 'yellowpages.com', 'facebook.com', 'google.com/maps',
+    '.org', 'contact', 'location', 'address', 'phone'
+  ];
+  
+  const hasGoodIndicator = goodIndicators.some(ind => 
+    url.toLowerCase().includes(ind) || titleLower.includes(ind) || (snippet && snippet.toLowerCase().includes(ind))
+  );
+  
+  // Check if title contains something related to the keyword
+  const keywordWords = keywordLower.split(/\s+/);
+  const hasKeywordMatch = keywordWords.some(word => 
+    word.length > 3 && titleLower.includes(word)
+  );
+  
+  return hasGoodIndicator || hasKeywordMatch;
+}
+
 /**
- * ENGINE 2: Search Engine Snippet Scraper (Bing - more reliable than DDG)
+ * Extract potential acronym from a business name
+ * "Hindu Temple & Cultural Center" -> "HTCC"
  */
-async function searchEngineSnippets(keyword, target) {
+function extractAcronym(name) {
+  if (!name || name.length < 5) return null;
+  // Get first letter of each significant word
+  const words = name.split(/[\s&]+/).filter(w => w.length > 2 && !/^(the|and|of|in|at|for)$/i.test(w));
+  if (words.length < 2) return null;
+  const acronym = words.map(w => w[0].toUpperCase()).join('');
+  return acronym.length >= 2 && acronym.length <= 6 ? acronym : null;
+}
+
+/**
+ * ENGINE 2: Intelligent Business Search via Bing
+ * Uses multiple search strategies to find actual businesses
+ */
+async function searchEngineSnippets(keyword, target, gisNames = []) {
   const leads = [];
-  try {
-    // Build cleaner query
-    const locationParts = [target.city, target.region].filter(Boolean);
-    const query = `${keyword} ${locationParts.join(' ')}`.trim();
-    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`;
+  const locationParts = [target.city, target.region].filter(Boolean);
+  const location = locationParts.join(' ');
+  const city = target.city || '';
+  
+  // Build smart queries
+  const queries = [];
+  
+  // For each GIS name, try both full name and acronym searches
+  for (const name of gisNames.slice(0, 2)) {
+    const acronym = extractAcronym(name);
+    if (acronym) {
+      // Acronym searches work better for specific businesses
+      queries.push(`${acronym} ${city} ${keyword}`);
+      queries.push(`${acronym} ${location}`);
+    }
+    queries.push(`"${name}" ${city}`);
+  }
+  
+  // Fallback generic searches
+  queries.push(`${keyword} "${city}" official site`);
+  queries.push(`${keyword} in ${location} contact`);
+  queries.push(`${keyword} ${location} site:facebook.com`);
+  
+  // Dedupe queries
+  const uniqueQueries = [...new Set(queries)].slice(0, 6);
+  
+  for (const query of uniqueQueries) {
+    if (leads.length >= 15) break;
     
-    console.log(`[BING] Querying: ${query}`);
-    
-    const res = await axiosInstance.get(searchUrl, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9'
-      }
-    });
+    try {
+      const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`;
+      console.log(`[BING] Querying: ${query}`);
+      
+      const res = await axiosInstance.get(searchUrl, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          'Accept': 'text/html',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      });
 
-    const $ = cheerio.load(res.data);
-    let resultCount = 0;
-    
-    // Bing uses different selectors
-    $('li.b_algo').each((i, el) => {
-      if (i >= 10) return;
-      const titleEl = $(el).find('h2 a');
-      const title = titleEl.text().trim();
-      const rawLink = titleEl.attr('href') || '';
-      const link = decodeBingUrl(rawLink);
-      const snippet = $(el).find('.b_caption p').text().trim();
+      const $ = cheerio.load(res.data);
+      
+      $('li.b_algo').each((i, el) => {
+        if (leads.length >= 20) return;
+        
+        const titleEl = $(el).find('h2 a');
+        const title = titleEl.text().trim();
+        const rawLink = titleEl.attr('href') || '';
+        const link = decodeBingUrl(rawLink);
+        const snippet = $(el).find('.b_caption p').text().trim();
 
-      if (title && link !== 'NA' && link.startsWith('http')) {
-        resultCount++;
+        // Filter out non-business results
+        if (!isLikelyBusinessResult(title, link, snippet, keyword)) return;
+        if (link === 'NA' || !link.startsWith('http')) return;
+        
+        // Check if we already have this URL
+        if (leads.some(l => l.website === link)) return;
+
         const phone = extractPhone(snippet);
         const email = extractEmail(snippet);
+        
+        // Extract better business name from title
+        let businessName = title
+          .replace(/\s*[-|·•]\s*Yelp.*$/i, '')
+          .replace(/\s*[-|·•]\s*Facebook.*$/i, '')
+          .replace(/\s*[-|·•]\s*Yellow\s*Pages.*$/i, '')
+          .replace(/THE BEST \d+ /i, '')
+          .replace(/ in .*$/i, '')
+          .split(/[-|·•]/)[0]
+          .trim();
 
         leads.push({
-          id: `bing-${i}-${Math.random().toString(36).substr(2, 5)}`,
-          name: sanitize(title.split('-')[0].split('|')[0].split('...')[0]),
-          location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim() || target.queryArea,
+          id: `bing-${leads.length}-${Math.random().toString(36).substr(2, 5)}`,
+          name: sanitize(businessName),
+          location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim(),
           city: target.city || '',
           zipcode: target.zipcode || '',
           phone: sanitize(phone),
@@ -393,73 +499,102 @@ async function searchEngineSnippets(keyword, target) {
           socials: {
             facebook: link.includes('facebook.com') ? link : "NA",
             instagram: link.includes('instagram.com') ? link : "NA",
-            tiktok: link.includes('tiktok.com') ? link : "NA"
+            tiktok: "NA"
           }
         });
-      }
-    });
-    
-    console.log(`[BING] Found ${resultCount} results`);
-  } catch (e) {
-    console.log(`[BING] Error: ${e.message}`);
+      });
+      
+      // Small delay between queries to avoid rate limiting
+      await new Promise(r => setTimeout(r, 300));
+      
+    } catch (e) {
+      console.log(`[BING] Error: ${e.message}`);
+    }
   }
+  
+  console.log(`[BING] Found ${leads.length} business results`);
   return leads;
 }
 
 /**
- * ENGINE 3: Directory Search via Bing (Yelp/YellowPages style queries)
+ * ENGINE 3: Targeted Directory Search (Yelp, Yellow Pages, Google Maps)
  */
-async function searchDirectoryExpansion(keyword, target) {
+async function searchDirectoryExpansion(keyword, target, gisNames = []) {
   const leads = [];
-  try {
-    const locationParts = [target.city, target.region].filter(Boolean);
-    const query = `${keyword} ${locationParts.join(' ')} yelp OR yellowpages`;
-    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=10`;
+  const locationParts = [target.city, target.region].filter(Boolean);
+  const location = locationParts.join(' ');
+  const city = target.city || '';
+  
+  // Specific directory-focused queries
+  const queries = [
+    // Search for GIS-found business names on directory sites
+    ...gisNames.slice(0, 2).map(name => `"${name}" site:yelp.com OR site:yellowpages.com`),
+    // General directory searches
+    `site:yelp.com ${keyword} "${city}"`,
+    `site:yellowpages.com ${keyword} ${location}`,
+    `${keyword} ${location} .org contact`
+  ].filter(q => q.trim());
+  
+  for (const query of queries) {
+    if (leads.length >= 10) break;
     
-    console.log(`[BING-DIR] Querying: ${query}`);
-    
-    const res = await axiosInstance.get(searchUrl, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9'
-      }
-    });
-
-    const $ = cheerio.load(res.data);
-    let resultCount = 0;
-    
-    $('li.b_algo').each((i, el) => {
-      if (i >= 8) return;
-      const titleEl = $(el).find('h2 a');
-      const title = titleEl.text().trim();
-      const rawWebsite = titleEl.attr('href') || '';
-      const website = decodeBingUrl(rawWebsite);
-      const snippet = $(el).find('.b_caption p').text().trim();
+    try {
+      const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=10`;
+      console.log(`[DIR] Querying: ${query}`);
       
-      if (!title || website === 'NA' || !website.startsWith('http')) return;
-
-      resultCount++;
-      leads.push({
-        id: `dir-${i}-${Math.random().toString(36).slice(2, 7)}`,
-        name: sanitize(title.split('-')[0].split('|')[0].split('...')[0]),
-        location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim() || target.queryArea,
-        city: target.city || '',
-        zipcode: target.zipcode || '',
-        phone: sanitize(extractPhone(snippet)),
-        email: sanitize(extractEmail(snippet)),
-        website,
-        sources: ['Directory Search'],
-        socials: { facebook: 'NA', instagram: 'NA', tiktok: 'NA' }
+      const res = await axiosInstance.get(searchUrl, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html'
+        }
       });
-    });
-    
-    console.log(`[BING-DIR] Found ${resultCount} results`);
-  } catch (e) {
-    console.log(`[BING-DIR] Error: ${e.message}`);
-  }
 
+      const $ = cheerio.load(res.data);
+      
+      $('li.b_algo').each((i, el) => {
+        if (leads.length >= 15) return;
+        
+        const titleEl = $(el).find('h2 a');
+        const title = titleEl.text().trim();
+        const rawWebsite = titleEl.attr('href') || '';
+        const website = decodeBingUrl(rawWebsite);
+        const snippet = $(el).find('.b_caption p').text().trim();
+        
+        if (!title || website === 'NA' || !website.startsWith('http')) return;
+        if (isExcludedDomain(website)) return;
+        if (leads.some(l => l.website === website)) return;
+
+        // Clean up business name
+        let businessName = title
+          .replace(/\s*[-|·•]\s*Yelp.*$/i, '')
+          .replace(/\s*[-|·•]\s*Yellow\s*Pages.*$/i, '')
+          .replace(/THE BEST \d+ /i, '')
+          .split(/[-|·•]/)[0]
+          .trim();
+
+        leads.push({
+          id: `dir-${leads.length}-${Math.random().toString(36).slice(2, 7)}`,
+          name: sanitize(businessName),
+          location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim(),
+          city: target.city || '',
+          zipcode: target.zipcode || '',
+          phone: sanitize(extractPhone(snippet)),
+          email: sanitize(extractEmail(snippet)),
+          website,
+          sources: ['Directory Search'],
+          socials: { facebook: 'NA', instagram: 'NA', tiktok: 'NA' }
+        });
+      });
+      
+      await new Promise(r => setTimeout(r, 300));
+      
+    } catch (e) {
+      console.log(`[DIR] Error: ${e.message}`);
+    }
+  }
+  
+  console.log(`[DIR] Found ${leads.length} directory results`);
   return leads;
 }
 
@@ -470,11 +605,20 @@ async function searchDirectoryExpansion(keyword, target) {
 async function searchTargetLocation(keyword, target, options = {}) {
   console.log(`\n[ORCHESTRATOR] Starting search for "${keyword}" in "${target.queryArea}"`);
   
-  // Execute multi-engine queries concurrently
-  const [gisLeads, snippetLeads, directoryLeads] = await Promise.all([
-    searchOverpassGIS(keyword, target),
-    searchEngineSnippets(keyword, target),
-    searchDirectoryExpansion(keyword, target)
+  // First run GIS to get actual business names
+  const gisLeads = await searchOverpassGIS(keyword, target);
+  
+  // Extract names found by GIS to use in web searches
+  const gisNames = gisLeads
+    .map(l => l.name)
+    .filter(n => n && n !== 'NA' && n.length > 3);
+  
+  console.log(`[ORCHESTRATOR] GIS found names: ${gisNames.join(', ') || 'none'}`);
+  
+  // Run web searches with GIS names for better targeting
+  const [snippetLeads, directoryLeads] = await Promise.all([
+    searchEngineSnippets(keyword, target, gisNames),
+    searchDirectoryExpansion(keyword, target, gisNames)
   ]);
 
   console.log(`[ORCHESTRATOR] Raw results - GIS: ${gisLeads.length}, Snippets: ${snippetLeads.length}, Directory: ${directoryLeads.length}`);
@@ -482,18 +626,37 @@ async function searchTargetLocation(keyword, target, options = {}) {
   // Combine raw lead results from all platforms
   const combinedRawLeads = [...gisLeads, ...snippetLeads, ...directoryLeads];
 
-  // Deep crawl websites for missing contact details (limit to first 5 to avoid rate limits)
-  const leadsToEnrich = combinedRawLeads.slice(0, 5);
-  for (const lead of leadsToEnrich) {
-    if (lead.website && lead.website !== 'NA' && (lead.email === 'NA' || lead.phone === 'NA')) {
-      try {
-        const deepDetails = await scrapeWebsiteDetails(lead.website);
-        if (lead.email === 'NA' && deepDetails.email !== 'NA') lead.email = deepDetails.email;
-        if (lead.phone === 'NA' && deepDetails.phone !== 'NA') lead.phone = deepDetails.phone;
-        if (lead.socials.facebook === 'NA' && deepDetails.socials.facebook !== 'NA') lead.socials.facebook = deepDetails.socials.facebook;
-        if (lead.socials.instagram === 'NA' && deepDetails.socials.instagram !== 'NA') lead.socials.instagram = deepDetails.socials.instagram;
-      } catch (e) {
-        // Skip enrichment errors
+  // Deep crawl websites for missing contact details - enrich ALL leads with websites
+  console.log(`[ORCHESTRATOR] Enriching leads with website contact info...`);
+  for (const lead of combinedRawLeads) {
+    if (lead.website && lead.website !== 'NA' && !isExcludedDomain(lead.website)) {
+      // Skip yelp/yellowpages/facebook - they don't have actual business contact info
+      if (lead.website.includes('yelp.com') || 
+          lead.website.includes('yellowpages.com') ||
+          lead.website.includes('facebook.com')) {
+        continue;
+      }
+      
+      if (lead.email === 'NA' || lead.phone === 'NA') {
+        try {
+          console.log(`[ENRICH] Scraping: ${lead.website.substring(0, 50)}...`);
+          const deepDetails = await scrapeWebsiteDetails(lead.website);
+          if (lead.email === 'NA' && deepDetails.email !== 'NA') {
+            lead.email = deepDetails.email;
+            console.log(`[ENRICH] Found email: ${deepDetails.email}`);
+          }
+          if (lead.phone === 'NA' && deepDetails.phone !== 'NA') {
+            lead.phone = deepDetails.phone;
+          }
+          if (lead.socials.facebook === 'NA' && deepDetails.socials.facebook !== 'NA') {
+            lead.socials.facebook = deepDetails.socials.facebook;
+          }
+          if (lead.socials.instagram === 'NA' && deepDetails.socials.instagram !== 'NA') {
+            lead.socials.instagram = deepDetails.socials.instagram;
+          }
+        } catch (e) {
+          // Skip enrichment errors silently
+        }
       }
     }
   }
