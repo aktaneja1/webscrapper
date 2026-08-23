@@ -5,11 +5,20 @@
 
 const axios = require('axios');
 const cheerio = require('cheerio');
+const https = require('https');
 const { URL } = require('url');
 const { mergeAndConcatenateLeads } = require('./entityMerger');
 
+// Create axios instance that ignores SSL certificate errors (for corporate proxies)
+const axiosInstance = axios.create({
+  httpsAgent: new https.Agent({
+    rejectUnauthorized: false
+  })
+});
+
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}/gi;
-const PHONE_REGEX = /(\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g;
+// Stricter phone regex: must have area code pattern, not coordinates
+const PHONE_REGEX = /(?:(?:\+1|1)?[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
 const GENERIC_EMAIL_PREFIXES = new Set([
   'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'example', 'test', 'sample', 'admin', 'support'
 ]);
@@ -52,6 +61,40 @@ function decodeDuckDuckGoUrl(rawUrl) {
   }
 }
 
+/**
+ * Decode Bing tracking URLs to get actual destination
+ */
+function decodeBingUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return 'NA';
+  
+  try {
+    // Check if it's a Bing tracking URL
+    if (rawUrl.includes('bing.com/ck/a')) {
+      const parsed = new URL(rawUrl);
+      const encodedUrl = parsed.searchParams.get('u');
+      if (encodedUrl) {
+        // Bing encodes URLs with a1 prefix
+        let decoded = encodedUrl;
+        if (decoded.startsWith('a1')) {
+          decoded = decoded.substring(2);
+        }
+        decoded = decodeURIComponent(decoded);
+        // Handle base64 encoding if present
+        try {
+          if (!decoded.startsWith('http')) {
+            decoded = Buffer.from(decoded, 'base64').toString('utf-8');
+          }
+        } catch (_) {}
+        return decoded.startsWith('http') ? decoded : 'NA';
+      }
+    }
+    // Regular URL
+    return rawUrl.startsWith('http') ? rawUrl : 'NA';
+  } catch (_) {
+    return rawUrl.startsWith('http') ? rawUrl : 'NA';
+  }
+}
+
 function isLikelyValidEmail(email) {
   if (!email || typeof email !== 'string') return false;
   const trimmed = email.trim().toLowerCase();
@@ -68,8 +111,14 @@ function isLikelyValidEmail(email) {
 function normalizePhoneCandidate(phone) {
   if (!phone || typeof phone !== 'string') return null;
   const digits = phone.replace(/\D/g, '');
-  if (digits.length < 10 || digits.length > 15) return null;
-  return phone.trim();
+  // Must be 10-11 digits (US format, with or without country code)
+  if (digits.length < 10 || digits.length > 11) return null;
+  // First digit of area code must be 2-9 (not 0 or 1)
+  const areaCodeStart = digits.length === 11 ? 1 : 0;
+  if (digits[areaCodeStart] === '0' || digits[areaCodeStart] === '1') return null;
+  // Format as (XXX) XXX-XXXX
+  const normalized = digits.slice(-10);
+  return `(${normalized.slice(0, 3)}) ${normalized.slice(3, 6)}-${normalized.slice(6)}`;
 }
 
 function pickBestEmail(candidates, siteHost = '') {
@@ -142,10 +191,12 @@ function collectContactPageCandidates($, baseUrl) {
 }
 
 async function fetchPage(url) {
-  const response = await axios.get(url, {
-    timeout: 6000,
+  const response = await axiosInstance.get(url, {
+    timeout: 8000,
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9'
     }
   });
   return response.data;
@@ -233,23 +284,25 @@ async function scrapeWebsiteDetails(websiteUrl) {
 async function searchOverpassGIS(keyword, target) {
   const leads = [];
   try {
-    const cleanBrand = keyword.replace(/stores|restaurants|shop/gi, '').trim();
-    // Overpass query for nodes/ways in area
-    const overpassQuery = `
-      [out:json][timeout:10];
-      (
-        node["name"~"${cleanBrand}",i](${target.city ? `area["name"="${target.city}"]` : ''});
-        way["name"~"${cleanBrand}",i](${target.city ? `area["name"="${target.city}"]` : ''});
-      );
-      out body 15;
-    `;
-
-    // Fast nominatim area fallback
-    const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(keyword + ' ' + target.queryArea)}&format=json&addressdetails=1&extratags=1&limit=15`;
-    const res = await axios.get(nomUrl, {
-      timeout: 5000,
-      headers: { 'User-Agent': 'OmniScrape/2.0 (BusinessDirectoryFinder)' }
+    // Build a cleaner search query - use city and state, skip zip if empty
+    const locationParts = [target.city, target.region].filter(Boolean);
+    const searchQuery = `${keyword} ${locationParts.join(', ')}`.trim();
+    
+    // Nominatim search with improved parameters
+    const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery)}&format=json&addressdetails=1&extratags=1&limit=20`;
+    
+    console.log(`[GIS] Querying: ${searchQuery}`);
+    
+    const res = await axiosInstance.get(nomUrl, {
+      timeout: 10000,
+      headers: { 
+        'User-Agent': 'WebScrapperApp/2.1 (https://github.com/user/webscrapper)',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
     });
+
+    console.log(`[GIS] Got ${res.data?.length || 0} results`);
 
     if (res.data && Array.isArray(res.data)) {
       for (const place of res.data) {
@@ -257,15 +310,16 @@ async function searchOverpassGIS(keyword, target) {
         const addr = place.address || {};
         const house = addr.house_number || "";
         const road = addr.road || addr.pedestrian || "";
-        const city = addr.city || addr.town || target.city;
-        const postcode = addr.postcode || target.zipcode;
+        const city = addr.city || addr.town || addr.village || target.city;
+        const postcode = addr.postcode || target.zipcode || '';
         const state = addr.state || target.region;
 
-        const name = tags.name || place.namedetails?.name || place.display_name.split(',')[0] || keyword;
-        const fullAddr = `${house} ${road}, ${city}, ${state} ${postcode}`.trim().replace(/^,/, '');
+        // Get name from multiple possible sources
+        const name = place.name || tags.name || place.namedetails?.name || place.display_name.split(',')[0] || keyword;
+        const fullAddr = `${house} ${road}, ${city}, ${state} ${postcode}`.trim().replace(/^,\s*/, '').replace(/,\s*,/g, ',');
         const phone = tags.phone || tags['contact:phone'] || "NA";
         const email = tags.email || tags['contact:email'] || "NA";
-        const website = tags.website || tags['contact:website'] || place.url || "NA";
+        const website = tags.website || tags['contact:website'] || "NA";
 
         leads.push({
           id: `osm-${place.place_id}`,
@@ -276,54 +330,66 @@ async function searchOverpassGIS(keyword, target) {
           phone: sanitize(phone),
           email: sanitize(email),
           website: sanitize(website),
-          sources: ["Google Maps", "OpenStreetMap GIS"],
+          sources: ["OpenStreetMap GIS"],
           socials: { facebook: "NA", instagram: "NA", tiktok: "NA" }
         });
       }
     }
   } catch (e) {
-    // Ignore endpoint timeouts
+    console.log(`[GIS] Error: ${e.message}`);
   }
   return leads;
 }
 
 /**
- * ENGINE 2: Search Engine & Web Directory Snippet Scraper (DuckDuckGo / YellowPages / Yelp)
+ * ENGINE 2: Search Engine Snippet Scraper (Bing - more reliable than DDG)
  */
 async function searchEngineSnippets(keyword, target) {
   const leads = [];
   try {
-    const query = `${keyword} ${target.queryArea}`;
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const res = await axios.get(searchUrl, {
-      timeout: 5000,
+    // Build cleaner query
+    const locationParts = [target.city, target.region].filter(Boolean);
+    const query = `${keyword} ${locationParts.join(' ')}`.trim();
+    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`;
+    
+    console.log(`[BING] Querying: ${query}`);
+    
+    const res = await axiosInstance.get(searchUrl, {
+      timeout: 10000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
       }
     });
 
     const $ = cheerio.load(res.data);
-    $('.result').each((i, el) => {
-      if (i >= 8) return; // Top 8 web search snippets
-      const title = $(el).find('.result__title').text().trim();
-      const snippet = $(el).find('.result__snippet').text().trim();
-      const rawLink = $(el).find('.result__a').attr('href') || $(el).find('.result__url').attr('href') || 'NA';
-      const link = decodeDuckDuckGoUrl(rawLink);
+    let resultCount = 0;
+    
+    // Bing uses different selectors
+    $('li.b_algo').each((i, el) => {
+      if (i >= 10) return;
+      const titleEl = $(el).find('h2 a');
+      const title = titleEl.text().trim();
+      const rawLink = titleEl.attr('href') || '';
+      const link = decodeBingUrl(rawLink);
+      const snippet = $(el).find('.b_caption p').text().trim();
 
-      if (title) {
+      if (title && link !== 'NA' && link.startsWith('http')) {
+        resultCount++;
         const phone = extractPhone(snippet);
         const email = extractEmail(snippet);
 
         leads.push({
-          id: `ddg-${i}-${Math.random().toString(36).substr(2, 5)}`,
-          name: sanitize(title.split('-')[0].split('|')[0]),
-          location: `${target.city}, ${target.region} ${target.zipcode}`,
-          city: target.city,
-          zipcode: target.zipcode,
+          id: `bing-${i}-${Math.random().toString(36).substr(2, 5)}`,
+          name: sanitize(title.split('-')[0].split('|')[0].split('...')[0]),
+          location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim() || target.queryArea,
+          city: target.city || '',
+          zipcode: target.zipcode || '',
           phone: sanitize(phone),
           email: sanitize(email),
-          website: link.startsWith('http') ? link : 'NA',
-          sources: ["Web Search Snippet"],
+          website: link,
+          sources: ["Web Search"],
           socials: {
             facebook: link.includes('facebook.com') ? link : "NA",
             instagram: link.includes('instagram.com') ? link : "NA",
@@ -332,51 +398,66 @@ async function searchEngineSnippets(keyword, target) {
         });
       }
     });
+    
+    console.log(`[BING] Found ${resultCount} results`);
   } catch (e) {
-    // Fallback search
+    console.log(`[BING] Error: ${e.message}`);
   }
   return leads;
 }
 
 /**
- * ENGINE 3: Directory Query Expansion (Real-only, no synthetic records)
+ * ENGINE 3: Directory Search via Bing (Yelp/YellowPages style queries)
  */
 async function searchDirectoryExpansion(keyword, target) {
   const leads = [];
   try {
-    const query = `${keyword} ${target.queryArea} contact`;
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const res = await axios.get(searchUrl, {
-      timeout: 5000,
+    const locationParts = [target.city, target.region].filter(Boolean);
+    const query = `${keyword} ${locationParts.join(' ')} yelp OR yellowpages`;
+    const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=10`;
+    
+    console.log(`[BING-DIR] Querying: ${query}`);
+    
+    const res = await axiosInstance.get(searchUrl, {
+      timeout: 10000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
       }
     });
 
     const $ = cheerio.load(res.data);
-    $('.result').each((i, el) => {
-      if (i >= 6) return;
-      const title = $(el).find('.result__title').text().trim();
-      const snippet = $(el).find('.result__snippet').text().trim();
-      const rawLink = $(el).find('.result__a').attr('href') || '';
-      const website = decodeDuckDuckGoUrl(rawLink);
-      if (!title || website === 'NA') return;
+    let resultCount = 0;
+    
+    $('li.b_algo').each((i, el) => {
+      if (i >= 8) return;
+      const titleEl = $(el).find('h2 a');
+      const title = titleEl.text().trim();
+      const rawWebsite = titleEl.attr('href') || '';
+      const website = decodeBingUrl(rawWebsite);
+      const snippet = $(el).find('.b_caption p').text().trim();
+      
+      if (!title || website === 'NA' || !website.startsWith('http')) return;
 
+      resultCount++;
       leads.push({
         id: `dir-${i}-${Math.random().toString(36).slice(2, 7)}`,
-        name: sanitize(title.split('-')[0].split('|')[0]),
-        location: `${target.city}, ${target.region} ${target.zipcode}`,
-        city: target.city,
-        zipcode: target.zipcode,
+        name: sanitize(title.split('-')[0].split('|')[0].split('...')[0]),
+        location: `${target.city || ''}, ${target.region || ''}`.replace(/^,\s*/, '').trim() || target.queryArea,
+        city: target.city || '',
+        zipcode: target.zipcode || '',
         phone: sanitize(extractPhone(snippet)),
         email: sanitize(extractEmail(snippet)),
         website,
-        sources: ['Directory/Contact Search'],
+        sources: ['Directory Search'],
         socials: { facebook: 'NA', instagram: 'NA', tiktok: 'NA' }
       });
     });
-  } catch (_) {
-    // If this query fails, continue with other engines.
+    
+    console.log(`[BING-DIR] Found ${resultCount} results`);
+  } catch (e) {
+    console.log(`[BING-DIR] Error: ${e.message}`);
   }
 
   return leads;
@@ -387,6 +468,8 @@ async function searchDirectoryExpansion(keyword, target) {
  * Runs all engines in parallel and merges/concatenates results.
  */
 async function searchTargetLocation(keyword, target, options = {}) {
+  console.log(`\n[ORCHESTRATOR] Starting search for "${keyword}" in "${target.queryArea}"`);
+  
   // Execute multi-engine queries concurrently
   const [gisLeads, snippetLeads, directoryLeads] = await Promise.all([
     searchOverpassGIS(keyword, target),
@@ -394,22 +477,31 @@ async function searchTargetLocation(keyword, target, options = {}) {
     searchDirectoryExpansion(keyword, target)
   ]);
 
+  console.log(`[ORCHESTRATOR] Raw results - GIS: ${gisLeads.length}, Snippets: ${snippetLeads.length}, Directory: ${directoryLeads.length}`);
+
   // Combine raw lead results from all platforms
   const combinedRawLeads = [...gisLeads, ...snippetLeads, ...directoryLeads];
 
-  // Deep crawl websites for missing contact details
-  for (const lead of combinedRawLeads) {
+  // Deep crawl websites for missing contact details (limit to first 5 to avoid rate limits)
+  const leadsToEnrich = combinedRawLeads.slice(0, 5);
+  for (const lead of leadsToEnrich) {
     if (lead.website && lead.website !== 'NA' && (lead.email === 'NA' || lead.phone === 'NA')) {
-      const deepDetails = await scrapeWebsiteDetails(lead.website);
-      if (lead.email === 'NA' && deepDetails.email !== 'NA') lead.email = deepDetails.email;
-      if (lead.phone === 'NA' && deepDetails.phone !== 'NA') lead.phone = deepDetails.phone;
-      if (lead.socials.facebook === 'NA' && deepDetails.socials.facebook !== 'NA') lead.socials.facebook = deepDetails.socials.facebook;
-      if (lead.socials.instagram === 'NA' && deepDetails.socials.instagram !== 'NA') lead.socials.instagram = deepDetails.socials.instagram;
+      try {
+        const deepDetails = await scrapeWebsiteDetails(lead.website);
+        if (lead.email === 'NA' && deepDetails.email !== 'NA') lead.email = deepDetails.email;
+        if (lead.phone === 'NA' && deepDetails.phone !== 'NA') lead.phone = deepDetails.phone;
+        if (lead.socials.facebook === 'NA' && deepDetails.socials.facebook !== 'NA') lead.socials.facebook = deepDetails.socials.facebook;
+        if (lead.socials.instagram === 'NA' && deepDetails.socials.instagram !== 'NA') lead.socials.instagram = deepDetails.socials.instagram;
+      } catch (e) {
+        // Skip enrichment errors
+      }
     }
   }
 
   // Deduplicate and Concatenate all records across platforms
   const concatenatedLeads = mergeAndConcatenateLeads(combinedRawLeads);
+  console.log(`[ORCHESTRATOR] After dedup: ${concatenatedLeads.length} unique leads`);
+  
   return concatenatedLeads;
 }
 
