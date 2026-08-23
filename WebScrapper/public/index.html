@@ -31,8 +31,8 @@
       <!-- Search & Configuration Section -->
       <section class="card config-card">
         <div class="card-header">
-          <h2><i class="fa-solid fa-magnifying-glass-location"></i> Configure Multi-Platform Business Search</h2>
-          <p>Exhaustively searches and concatenates results across Google Maps, OpenStreetMap GIS, Store Locators, Search Engines, and Social Directories.</p>
+          <h2><i class="fa-solid fa-magnifying-glass-location"></i> Configure Multi-Source Business Search</h2>
+          <p>Searches and concatenates verifiable results from OpenStreetMap, web search snippets, and contact pages. No synthetic contacts are generated.</p>
         </div>
         
         <form id="scrape-form" class="scrape-form">
@@ -62,7 +62,7 @@
               <label><i class="fa-solid fa-object-group"></i> Multi-Source Concatenation</label>
               <div class="concatenation-indicator">
                 <i class="fa-solid fa-circle-check" style="color: var(--accent-green);"></i>
-                <span>Auto-Merge & Deduplicate across Maps + GIS + Directories</span>
+                <span>Auto-Merge & Deduplicate across GIS + Web + Contact Pages</span>
               </div>
             </div>
           </div>
@@ -81,20 +81,16 @@
             <label class="section-label"><i class="fa-solid fa-diagram-project"></i> Concatenated Research Sources</label>
             <div class="platform-tags">
               <label class="platform-chip active">
-                <input type="checkbox" name="platform" value="maps" checked disabled>
-                <i class="fa-solid fa-map-pin"></i> Google Maps
-              </label>
-              <label class="platform-chip active">
                 <input type="checkbox" name="platform" value="gis" checked disabled>
                 <i class="fa-solid fa-earth-americas"></i> OpenStreetMap GIS
               </label>
               <label class="platform-chip active">
-                <input type="checkbox" name="platform" value="locator" checked disabled>
-                <i class="fa-solid fa-city"></i> Chain Store Locators
+                <input type="checkbox" name="platform" value="contact" checked disabled>
+                <i class="fa-solid fa-address-book"></i> Contact Pages
               </label>
               <label class="platform-chip active">
                 <input type="checkbox" name="platform" value="search" checked>
-                <i class="fa-brands fa-google"></i> Google Search
+                <i class="fa-solid fa-magnifying-glass"></i> Web Search
               </label>
               <label class="platform-chip active">
                 <input type="checkbox" name="platform" value="facebook" checked>

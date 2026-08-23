@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateStats();
     updateProgress(0);
 
-    addLog(`Initiating multi-platform search concatenation for "${keyword}" in "${area}" [Depth: ${depthMode}]...`, 'info');
+    addLog(`Initiating real-source search for "${keyword}" in "${area}" [Depth: ${depthMode}]...`, 'info');
 
     try {
       // Step 1: Geo Drill-down API call
@@ -153,7 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Step 2: Iterate and scrape sub-areas sequentially
       for (const target of targets) {
-        addLog(`Querying & Concatenating multi-engine results for: ${target.queryArea}...`, 'info');
+          addLog(`Querying GIS + web + contact-page signals for: ${target.queryArea}...`, 'info');
 
         try {
           const scrapeRes = await fetch('/api/scrape-target', {
@@ -186,7 +186,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateStats();
       }
 
-      addLog(`Research & Concatenation complete! Total unique store leads acquired: ${allLeads.length}`, 'success');
+      addLog(`Research complete. Total unique leads acquired: ${allLeads.length}`, 'success');
     } catch (err) {
       addLog(`Execution error: ${err.message}`, 'error');
     } finally {
