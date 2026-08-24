@@ -34,20 +34,32 @@ const REGION_DATABASE = {
     name: "Washington",
     abbrev: "WA",
     type: "state",
+    metros: {
+      // Greater Seattle Metro includes surrounding cities
+      "seattle metro": ["Seattle", "Renton", "Kent", "Bothell", "Bellevue", "Kirkland", "Redmond", "Federal Way", "Auburn", "Tukwila", "SeaTac", "Burien", "Shoreline", "Lynnwood", "Edmonds", "Mountlake Terrace"]
+    },
     cities: [
-      { name: "Seattle", zipcodes: ["98101", "98102", "98103", "98104", "98105", "98107", "98109", "98115", "98122", "98133", "98144"] },
+      { name: "Seattle", zipcodes: ["98101", "98102", "98103", "98104", "98105", "98106", "98107", "98108", "98109", "98112", "98115", "98116", "98117", "98118", "98119", "98121", "98122", "98125", "98126", "98133", "98134", "98136", "98144", "98146", "98154", "98164", "98174", "98177", "98178", "98195", "98199"] },
       { name: "Federal Way", zipcodes: ["98001", "98003", "98023", "98063", "98093"] },
-      { name: "Tacoma", zipcodes: ["98402", "98403", "98404", "98405", "98406", "98407", "98408", "98409"] },
-      { name: "Spokane", zipcodes: ["99201", "99202", "99203", "99204", "99205", "99207", "99208"] },
-      { name: "Bellevue", zipcodes: ["98004", "98005", "98006", "98007", "98008"] },
-      { name: "Bothell", zipcodes: ["98011", "98012", "98021"] },
-      { name: "Kirkland", zipcodes: ["98033", "98034"] },
-      { name: "Redmond", zipcodes: ["98052", "98053"] },
-      { name: "Renton", zipcodes: ["98055", "98056", "98057", "98058"] },
-      { name: "Kent", zipcodes: ["98030", "98031", "98032", "98042"] },
-      { name: "Everett", zipcodes: ["98201", "98203", "98204", "98208"] },
-      { name: "Olympia", zipcodes: ["98501", "98502", "98503", "98506"] },
-      { name: "Vancouver", zipcodes: ["98660", "98661", "98662", "98663", "98664", "98665"] }
+      { name: "Tacoma", zipcodes: ["98402", "98403", "98404", "98405", "98406", "98407", "98408", "98409", "98411", "98412", "98413", "98415", "98416", "98417", "98418", "98419", "98421", "98422", "98424", "98443", "98444", "98445", "98446", "98447", "98465", "98466", "98467"] },
+      { name: "Spokane", zipcodes: ["99201", "99202", "99203", "99204", "99205", "99207", "99208", "99212", "99217", "99218", "99223", "99224"] },
+      { name: "Bellevue", zipcodes: ["98004", "98005", "98006", "98007", "98008", "98009", "98015"] },
+      { name: "Bothell", zipcodes: ["98011", "98012", "98021", "98041"] },
+      { name: "Kirkland", zipcodes: ["98033", "98034", "98083"] },
+      { name: "Redmond", zipcodes: ["98052", "98053", "98073", "98074"] },
+      { name: "Renton", zipcodes: ["98055", "98056", "98057", "98058", "98059"] },
+      { name: "Kent", zipcodes: ["98030", "98031", "98032", "98035", "98042", "98064", "98089"] },
+      { name: "Auburn", zipcodes: ["98001", "98002", "98071", "98092"] },
+      { name: "Everett", zipcodes: ["98201", "98203", "98204", "98206", "98207", "98208", "98213"] },
+      { name: "Olympia", zipcodes: ["98501", "98502", "98503", "98504", "98505", "98506", "98507", "98508", "98509"] },
+      { name: "Vancouver", zipcodes: ["98660", "98661", "98662", "98663", "98664", "98665", "98682", "98683", "98684", "98685", "98686", "98687"] },
+      { name: "Tukwila", zipcodes: ["98138", "98168", "98188"] },
+      { name: "SeaTac", zipcodes: ["98148", "98158", "98168", "98188", "98198"] },
+      { name: "Burien", zipcodes: ["98146", "98148", "98166", "98168"] },
+      { name: "Shoreline", zipcodes: ["98133", "98155", "98160", "98177"] },
+      { name: "Lynnwood", zipcodes: ["98036", "98037", "98046", "98087"] },
+      { name: "Edmonds", zipcodes: ["98020", "98026"] },
+      { name: "Mountlake Terrace", zipcodes: ["98043"] }
     ]
   },
   oregon: {
@@ -198,6 +210,23 @@ function findStateInDatabase(stateName) {
 }
 
 /**
+ * Get all cities in a metro area.
+ */
+function getMetroCities(region, cityName) {
+  if (!region.metros) return null;
+  
+  const normalizedCity = cityName.toLowerCase();
+  for (const [metroName, metroCities] of Object.entries(region.metros)) {
+    // Check if the searched city is part of this metro
+    if (metroCities.some(c => c.toLowerCase() === normalizedCity) || 
+        metroName.includes(normalizedCity)) {
+      return metroCities;
+    }
+  }
+  return null;
+}
+
+/**
  * Given a prompt area string (e.g., "California", "Fremont", "Bothell Washington"),
  * resolves it into an exhaustive list of search targets.
  */
@@ -209,6 +238,35 @@ function drilldownArea(areaPrompt, depthMode = 'standard') {
     const cityMatch = findCityInDatabase(parsed.city, parsed.state);
     if (cityMatch) {
       const { region, city } = cityMatch;
+      
+      // Check if this city is part of a metro area - if so, expand to metro
+      const metroCities = getMetroCities(region, city.name);
+      if (metroCities && depthMode !== 'single') {
+        console.log(`[GEO] Expanding ${city.name} to metro area: ${metroCities.length} cities`);
+        const targets = [];
+        for (const metroCity of metroCities) {
+          const cityData = region.cities.find(c => c.name.toLowerCase() === metroCity.toLowerCase());
+          if (cityData) {
+            // Use more zips in exhaustive mode
+            const zips = depthMode === 'exhaustive' ? cityData.zipcodes : cityData.zipcodes.slice(0, 2);
+            zips.forEach(zip => {
+              targets.push({
+                region: region.name,
+                city: cityData.name,
+                zipcode: zip,
+                queryArea: `${cityData.name}, ${region.name} ${zip}`
+              });
+            });
+          }
+        }
+        return {
+          matchedRegion: `${city.name} Metro, ${region.name}`,
+          isBroadArea: true,
+          targets
+        };
+      }
+      
+      // Not a metro city - just return that city
       const zips = depthMode === 'exhaustive' ? city.zipcodes : city.zipcodes.slice(0, 3);
       const targets = zips.map(zip => ({
         region: region.name,
@@ -243,6 +301,33 @@ function drilldownArea(areaPrompt, depthMode = 'standard') {
   const cityMatch = findCityInDatabase(parsed.raw);
   if (cityMatch) {
     const { region, city } = cityMatch;
+    
+    // Check if this city is part of a metro area - if so, expand to metro
+    const metroCities = getMetroCities(region, city.name);
+    if (metroCities && depthMode !== 'single') {
+      console.log(`[GEO] Expanding ${city.name} to metro area: ${metroCities.length} cities`);
+      const targets = [];
+      for (const metroCity of metroCities) {
+        const cityData = region.cities.find(c => c.name.toLowerCase() === metroCity.toLowerCase());
+        if (cityData) {
+          const zips = depthMode === 'exhaustive' ? cityData.zipcodes : cityData.zipcodes.slice(0, 2);
+          zips.forEach(zip => {
+            targets.push({
+              region: region.name,
+              city: cityData.name,
+              zipcode: zip,
+              queryArea: `${cityData.name}, ${region.name} ${zip}`
+            });
+          });
+        }
+      }
+      return {
+        matchedRegion: `${city.name} Metro, ${region.name}`,
+        isBroadArea: true,
+        targets
+      };
+    }
+    
     const zips = depthMode === 'exhaustive' ? city.zipcodes : city.zipcodes.slice(0, 3);
     const targets = zips.map(zip => ({
       region: region.name,

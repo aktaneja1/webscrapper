@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { drilldownArea, REGION_DATABASE } = require('./geoDrilldown');
-const { searchTargetLocation } = require('./scraper');
+const { searchTargetLocation, searchAllTargets } = require('./scraper');
 
 const app = express();
 const PORT = process.env.PORT || 3030;
@@ -27,6 +27,34 @@ app.post('/api/drilldown', (req, res) => {
     totalTargets: result.targets.length,
     targets: result.targets
   });
+});
+
+// API: Full search - drilldown area then search all targets
+app.post('/api/search', async (req, res) => {
+  const { keyword, area, depthMode } = req.body;
+  if (!keyword || !area) {
+    return res.status(400).json({ error: "Keyword and area parameters are required." });
+  }
+
+  try {
+    // First drilldown the area into targets
+    const drilldown = drilldownArea(area, depthMode || 'standard');
+    console.log(`[API] Searching "${keyword}" in "${drilldown.matchedRegion}" (${drilldown.targets.length} targets)`);
+    
+    // Search all targets
+    const leads = await searchAllTargets(keyword, drilldown.targets);
+    
+    res.json({
+      keyword,
+      area,
+      matchedRegion: drilldown.matchedRegion,
+      targetsSearched: drilldown.targets.length,
+      leadCount: leads.length,
+      leads: leads
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Search failed", details: err.message });
+  }
 });
 
 // API: Scrape single geographic target (Zip code / City level)
